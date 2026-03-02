@@ -1,0 +1,66 @@
+name: Sync school to senior repo
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout client repo
+        uses: actions/checkout@v4
+
+      - name: Sync into Incrisz/school-websites
+        env:
+          DOMAIN: ellaschool.com
+          TARGET_REPO: Incrisz/school-websites
+          TARGET_BRANCH: main
+          TOKEN: ${{ secrets.SENIOR_REPO_PAT }}
+        run: |
+          set -euo pipefail
+
+          CLONE_DIR="${RUNNER_TEMP}/school-websites-target"
+          rm -rf "${CLONE_DIR}"
+          git clone "https://x-access-token:${TOKEN}@github.com/${TARGET_REPO}.git" "${CLONE_DIR}"
+          cd "${CLONE_DIR}"
+
+          git config user.name "sync-bot"
+          git config user.email "sync-bot@users.noreply.github.com"
+
+          mkdir -p "${DOMAIN}"
+          rsync -a --delete \
+            --exclude ".git" \
+            --exclude ".github" \
+            "${GITHUB_WORKSPACE}/" "${DOMAIN}/"
+
+          touch .env
+          current="$(grep -m1 '^DOMAINS=' .env | cut -d'=' -f2- | tr -d '"' || true)"
+          found=0
+          new_list=""
+          IFS=',' read -ra arr <<< "${current}"
+          for d in "${arr[@]}"; do
+            d="$(echo "$d" | xargs)"
+            [ -z "$d" ] && continue
+            [ "$d" = "$DOMAIN" ] && found=1
+            [ -z "$new_list" ] && new_list="$d" || new_list="$new_list, $d"
+          done
+          if [ "$found" -eq 0 ]; then
+            [ -z "$new_list" ] && new_list="$DOMAIN" || new_list="$new_list, $DOMAIN"
+          fi
+
+          if grep -q '^DOMAINS=' .env; then
+            sed -i "s|^DOMAINS=.*|DOMAINS=\"${new_list}\"|" .env
+          else
+            echo "DOMAINS=\"${new_list}\"" >> .env
+          fi
+
+          git add "${DOMAIN}" .env
+          if git diff --cached --quiet; then
+            echo "No changes."
+            exit 0
+          fi
+
+          git commit -m "sync ${DOMAIN} from ${GITHUB_REPOSITORY}@${GITHUB_SHA::7}"
+          git push origin "${TARGET_BRANCH}"
